@@ -117,7 +117,7 @@ func TestHandleMessageSubmission(t *testing.T) {
 			}
 
 			rr := httptest.NewRecorder()
-			handler := http.HandlerFunc(handleMessageSubmission)
+			handler := http.HandlerFunc(handleMessageAction)
 
 			handler.ServeHTTP(rr, req)
 
