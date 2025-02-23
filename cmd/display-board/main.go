@@ -97,7 +97,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Send initial messages
 	messages, _ := messagesDb.GetMessages()
 	html := generateMessagesHTML(messages)
-	wsMessage := fmt.Sprintf(html)
+	wsMessage := html
 	conn.WriteMessage(websocket.TextMessage, []byte(wsMessage))
 }
 
@@ -106,18 +106,22 @@ func generateMessagesHTML(messages []db.Message) string {
 	var html string
 	for _, msg := range messages {
 		html += fmt.Sprintf(`
-			<tr>
-				<td>%s</td>
-				<td>%s</td>
-				<td>
-					<button hx-delete="/message?id=%d"
-							hx-confirm="Are you sure you want to delete this message?"
-							hx-target="closest tr"
-							hx-swap="outerHTML">
+			<div class="flexItem">
+				<div class="flexItemContent message">
+					%s
+				</div>
+				<div class="flexItemContent date">
+					%s
+				</div>
+				<div class="flexItemContent actions">
+					<button class="button-terminal" hx-delete="/message?id=%d"
+						hx-confirm="Are you sure you want to delete this message?"
+						hx-target="closest div.flexItem"
+						hx-swap="outerHTML">
 						Delete
 					</button>
-				</td>
-			</tr>`,
+				</div>
+			</div>`,
 			msg.Message,
 			func() string {
 				if !msg.Modified.IsZero() {
@@ -141,6 +145,9 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 <html class="fullPage">
 <head>
     <title>Display Board</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
 	<style>
@@ -308,89 +315,107 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		.fullPage {
 			background-color: #000;
 			color: #00B1B7;
-			font-size: 50px;
+			font-size: 40px;
+			font-family: "VT323", serif;
+			font-weight: 400;
+			font-style: normal;
 		}
 
 		.h1 {
 			text-align: center;
+			margin-bottom: 10px;
 		}
 
 		.table {
 			width: 100%;
 		}
 
+		.flexList {
+			display: flex;
+    		flex-direction: column;
+    		gap: 10px;
+			height: 460px;
+			overflow: hidden;
+			position: relative;
+			font-size: 50px;
+		}
+
 		.flexContainer {
 			display: flex;
 			flex-direction: column;
 			gap: 10px;
+			column-gap: 50px;
+    		margin-left: 20px;
+    		margin-right: 20px;
+			animation: scroll-list 25s linear infinite;
 		}
 
 		.flexItem {
 			display: flex;
 			flex-direction: row;
 			gap: 10px;
+			height: 80px;
 		}
 
 		.flexItemContent {
 			flex: 1;
 		}
 
-		
-		
-		
+		.flexItemContent.actions {
+			display: flex;
+			align-items: center;
+			width: 100%;
+			height: 50px;
+			justify-content: center;
+		}
+
+		.button-terminal {
+			background-color: black;
+			color: #00B1B7;
+			font-size: 40px;
+			border: 5px solid #00B1B7;
+			padding: 10px 20px;
+			text-transform: uppercase;
+			cursor: pointer;
+			outline: none;
+			transition: all 0.2sease-in-out;
+		}
+
+		@keyframes scroll-list {
+		  0% {
+		    transform: translateY(0);
+		  }
+		  100% {
+		    transform: translateY(-50%);
+		  }
+		}
 	</style>
 </head>
 <body>
     <div id="wrapper" class="crt">
-        <h1 class="h1">Display Board</h1>
-        <div hx-ext="ws" ws-connect="/ws">
-			<div class="flexContainer">
-				{{range .}}
-				<div class="flexItem">
-					<div class="flexItemContent message">
-						{{.Message}}
-					</div>
-					<div class="flexItemContent date">
-						{{if .Modified.IsZero}}{{.Created.Format "2006-01-02"}}{{else}}{{.Modified.Format "2006-01-02 15:04:05"}}{{end}}
-					</div>
-					<div class="flexItemContent actions">
-						<button hx-delete="/message?id={{.ID}}"
-							hx-confirm="Are you sure you want to delete this message?"
-							hx-target="closest tr"
-							hx-swap="outerHTML">
-							Delete
-						</button>
-					</div>
+        <h1 class="h1">Remindintosh </h1>
+		<div class="flexList">
+        <div class="flexContainer" hx-ext="ws" ws-connect="/ws" id="messages-list">
+			{{range .}}
+			<div class="flexItem">
+				<div class="flexItemContent message">
+					{{.Message}}
 				</div>
-				{{end}}
+				<div class="flexItemContent date">
+					{{if .Modified.IsZero}}{{.Created.Format "2006-01-02"}}{{else}}{{.Modified.Format "2006-01-02 15:04:05"}}{{end}}
+				</div>
+				<div class="flexItemContent actions">
+					<button class="button-terminal" hx-delete="/message?id={{.ID}}"
+						hx-confirm="Are you sure you want to delete this message?"
+						hx-target="closest div.flexItem"
+						hx-swap="outerHTML">
+						Delete
+					</button>
+				</div>
 			</div>
-
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Message</th>
-                        <th>Date</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="messages-list">
-                    {{range .}}
-                    <tr>
-                        <td>{{.Message}}</td>
-                        <td>{{if .Modified.IsZero}}{{.Created.Format "2006-01-02"}}{{else}}{{.Modified.Format "2006-01-02 15:04:05"}}{{end}}</td>
-                        <td>
-                            <button hx-delete="/message?id={{.ID}}"
-                                    hx-confirm="Are you sure you want to delete this message?"
-                                    hx-target="closest tr"
-                                    hx-swap="outerHTML">
-                                Delete
-                            </button>
-                        </td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
+			{{end}}
         </div>
+		</div>
         <br/>
     </div>
 </body>
