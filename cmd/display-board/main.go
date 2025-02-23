@@ -326,10 +326,6 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 			margin-bottom: 10px;
 		}
 
-		.table {
-			width: 100%;
-		}
-
 		.flexList {
 			display: flex;
     		flex-direction: column;
