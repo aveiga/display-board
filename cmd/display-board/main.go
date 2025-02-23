@@ -110,12 +110,8 @@ func generateMessagesHTML(messages []db.Message) string {
 				<div class="flexItemContent message">
 					%s
 				</div>
-				<div class="flexItemContent date">
-					%s
-				</div>
 				<div class="flexItemContent actions">
 					<button class="button-terminal" hx-delete="/message?id=%d"
-						hx-confirm="Are you sure you want to delete this message?"
 						hx-target="closest div.flexItem"
 						hx-swap="outerHTML">
 						Delete
@@ -123,12 +119,6 @@ func generateMessagesHTML(messages []db.Message) string {
 				</div>
 			</div>`,
 			msg.Message,
-			func() string {
-				if !msg.Modified.IsZero() {
-					return msg.Modified.Format("2006-01-02 15:04:05")
-				}
-				return msg.Created.Format("2006-01-02")
-			}(),
 			msg.ID)
 	}
 	return html
@@ -144,7 +134,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	tmpl := `<!DOCTYPE html>
 <html class="fullPage">
 <head>
-    <title>Display Board</title>
+    <title>Remindintosh</title>
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
@@ -323,7 +313,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 		.h1 {
 			text-align: center;
-			margin-bottom: 10px;
+			margin-bottom: 5px;
 		}
 
 		.flexList {
@@ -389,7 +379,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div id="wrapper" class="crt">
-        <h1 class="h1">Remindintosh </h1>
+        <h1 class="h1">Remindintosh</h1>
 		<div class="flexList">
         <div class="flexContainer" hx-ext="ws" ws-connect="/ws" id="messages-list">
 			{{range .}}
@@ -397,12 +387,8 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 				<div class="flexItemContent message">
 					{{.Message}}
 				</div>
-				<div class="flexItemContent date">
-					{{if .Modified.IsZero}}{{.Created.Format "2006-01-02"}}{{else}}{{.Modified.Format "2006-01-02 15:04:05"}}{{end}}
-				</div>
 				<div class="flexItemContent actions">
 					<button class="button-terminal" hx-delete="/message?id={{.ID}}"
-						hx-confirm="Are you sure you want to delete this message?"
 						hx-target="closest div.flexItem"
 						hx-swap="outerHTML">
 						Delete
@@ -426,7 +412,7 @@ func handleMessageCreationPage(w http.ResponseWriter, r *http.Request) {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Display Board - Create Message</title>
+    <title>Remindintosh - Create Message</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </head>
 <body>
