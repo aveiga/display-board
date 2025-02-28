@@ -65,7 +65,7 @@ func runConsoleBased() {
 
 		// Print footer
 		fmt.Println()
-		fmt.Println("\033[1;36m===============================\033[0m")
+		fmt.Println("\033[1;36m==============================\033[0m")
 
 		// Increment scroll position every 3 seconds
 		if len(messages) > maxShow {
@@ -80,6 +80,7 @@ func runConsoleBased() {
 func startWebServer() {
 	// Set up HTTP routes
 	http.HandleFunc("/messages", handleMessageCreationPage)
+	http.HandleFunc("/messages/data", handleMessageData)
 	http.HandleFunc("/message", handleMessageAction)
 
 	fmt.Println("Web server starting on :8080...")
@@ -126,22 +127,96 @@ func handleMessageCreationPage(w http.ResponseWriter, r *http.Request) {
             width: 80%;
             height: 150px;
         }
+        .message-list {
+            border: 3px solid #00B1B7;
+            margin-top: 20px;
+            padding: 10px;
+        }
+        .message-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-bottom: 2px dashed #00B1B7;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .delete-btn {
+            background-color: black;
+            color: #ff0000;
+            border: 3px solid #ff0000;
+            font-family: "VT323", serif;
+            font-size: 30px;
+            cursor: pointer;
+            padding: 5px 15px;
+        }
+        h2 {
+            border-bottom: 3px solid #00B1B7;
+            padding-bottom: 10px;
+        }
+        .header-with-button {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .refresh-btn {
+            background-color: black;
+            color: #00B1B7;
+            border: 3px solid #00B1B7;
+            font-family: "VT323", serif;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 5px 15px;
+        }
     </style>
 </head>
 <body>
-    <h1>Create New Message</h1>
-    <form hx-post="/message" hx-swap="none" hx-on::after-request="this.reset()">
+    <h1>REMINDINTOSH</h1>
+    
+    <h2>Create New Message</h2>
+    <form hx-post="/message" hx-swap="none" hx-on::after-request="this.reset(); document.getElementById('refresh-button').click();">
         <div>
             <label for="message">Message:</label><br>
             <textarea id="message" name="message" required></textarea><br>
         </div>
         <input type="submit" value="Submit" class="button-terminal">
     </form>
+    
+    <div class="header-with-button">
+        <h2>Current Messages</h2>
+        <button id="refresh-button" class="refresh-btn" hx-get="/messages/data" hx-target="#message-list">REFRESH</button>
+    </div>
+    <div id="message-list" class="message-list" hx-get="/messages/data" hx-trigger="load">
+        Loading messages...
+    </div>
 </body>
 </html>`
 
 	t := template.Must(template.New("create").Parse(tmpl))
 	t.Execute(w, nil)
+}
+
+func handleMessageData(w http.ResponseWriter, r *http.Request) {
+	messages, err := messagesDb.GetMessages()
+	if err != nil {
+		http.Error(w, "Failed to get messages", http.StatusInternalServerError)
+		return
+	}
+
+	if len(messages) == 0 {
+		fmt.Fprint(w, "<div class='message-item'>No messages yet</div>")
+		return
+	}
+
+	for _, msg := range messages {
+		// Format the creation time
+		timeStr := msg.Created.Format("2006-01-02 15:04")
+		fmt.Fprintf(w, `
+			<div class="message-item" id="msg-%d">
+				<div>%s<br><small>%s</small></div>
+				<button class="delete-btn" hx-delete="/message?id=%d" hx-target="#msg-%d" hx-swap="outerHTML">DELETE</button>
+			</div>
+		`, msg.ID, msg.Message, timeStr, msg.ID, msg.ID)
+	}
 }
 
 func handleMessageAction(w http.ResponseWriter, r *http.Request) {
