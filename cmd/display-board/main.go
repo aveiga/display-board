@@ -3,179 +3,78 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"image/color"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 	"github.com/aveiga/display-board/pkg/db"
 )
-
-// RetroTheme implements a custom theme that mimics old terminal displays
-type RetroTheme struct {
-	fyne.Theme
-}
-
-func (r RetroTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	switch name {
-	case theme.ColorNameBackground:
-		return color.Black
-	case theme.ColorNameForeground, theme.ColorNamePrimary:
-		return color.RGBA{0x00, 0xB1, 0xB7, 0xFF} // #00B1B7 - the terminal green-blue color
-	case theme.ColorNameButton, theme.ColorNameDisabled:
-		return color.RGBA{0x00, 0x80, 0x80, 0xFF}
-	default:
-		return color.RGBA{0x00, 0xB1, 0xB7, 0xFF}
-	}
-}
-
-func (r RetroTheme) Font(style fyne.TextStyle) fyne.Resource {
-	return theme.DefaultTheme().Font(style)
-}
-
-func (r RetroTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
-	return theme.DefaultTheme().Icon(name)
-}
-
-func (r RetroTheme) Size(name fyne.ThemeSizeName) float32 {
-	switch name {
-	case theme.SizeNameText:
-		return 18 // Larger text size
-	case theme.SizeNamePadding:
-		return 4 // Reduced padding for compact look
-	default:
-		return theme.DefaultTheme().Size(name)
-	}
-}
 
 var messagesDb = db.Database{}
 var currentScrollIndex = 0
 
 func main() {
-	// Set environment variables for framebuffer access
-	os.Setenv("FYNE_DRIVER", "gl")
-	os.Setenv("FYNE_SCALE", "1")
-
 	// Start HTTP server for message creation
 	go startWebServer()
 
-	// Start Fyne app for message display
-	myApp := app.New()
-	myApp.Settings().SetTheme(&RetroTheme{})
-	window := myApp.NewWindow("Remindintosh")
+	// Run framebuffer-based display
+	go runConsoleBased()
 
-	// Set up fullscreen mode
-	window.SetFullScreen(true)
-	window.CenterOnScreen()
+	// Keep the main thread alive
+	select {}
+}
 
-	// Create title label with custom styling
-	title := widget.NewLabel("Remindintosh")
-	title.TextStyle = fyne.TextStyle{
-		Bold:      true,
-		Monospace: true,
-	}
-	// Center the title and wrap it in padding
-	titleContainer := container.NewCenter(
-		container.NewPadded(title),
-	)
+func runConsoleBased() {
+	// Clear the console
+	clearCommand := exec.Command("clear")
+	clearCommand.Stdout = os.Stdout
 
-	// Define messageList here so it's in scope for the refresh function
-	var messageList *widget.List
-	messageList = widget.NewList(
-		func() int {
-			messages, _ := messagesDb.GetMessages()
-			return len(messages)
-		},
-		func() fyne.CanvasObject {
-			return container.NewHBox(
-				// Make the label take most of the space
-				container.NewGridWrap(fyne.NewSize(240, 30),
-					widget.NewLabel(""),
-				),
-				// Small delete button on the right
-				container.NewGridWrap(fyne.NewSize(50, 30),
-					widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {}),
-				),
-			)
-		},
-		func(id widget.ListItemID, item fyne.CanvasObject) {
-			messages, _ := messagesDb.GetMessages()
-			if id < len(messages) {
-				box := item.(*fyne.Container)
-				labelContainer := box.Objects[0].(*fyne.Container)
-				buttonContainer := box.Objects[1].(*fyne.Container)
+	for {
+		messages, _ := messagesDb.GetMessages()
 
-				label := labelContainer.Objects[0].(*widget.Label)
-				button := buttonContainer.Objects[0].(*widget.Button)
+		// Clear the screen
+		clearCommand.Run()
 
-				// Truncate long messages to fit the screen
-				msg := messages[id].Message
-				if len(msg) > 30 {
-					msg = msg[:27] + "..."
-				}
-				label.SetText(msg)
-				label.Wrapping = fyne.TextTruncate
+		// Print title
+		fmt.Println("\033[1;36m========== REMINDINTOSH ==========\033[0m")
+		fmt.Println()
 
-				button.OnTapped = func() {
-					messagesDb.DeleteMessage(messages[id].ID)
-					messageList.Refresh()
+		// Display messages
+		maxShow := 10 // Maximum messages to show
+		if len(messages) > 0 {
+			count := len(messages)
+			if count > maxShow {
+				count = maxShow
+			}
+
+			for i := 0; i < count; i++ {
+				idx := (currentScrollIndex + i) % len(messages)
+				if idx < len(messages) {
+					msg := messages[idx].Message
+					if len(msg) > 40 {
+						msg = msg[:37] + "..."
+					}
+					fmt.Printf("\033[1;32m%d:\033[0m %s\n", idx+1, msg)
 				}
 			}
-		},
-	)
+		} else {
+			fmt.Println("\033[1;33mNo messages yet\033[0m")
+		}
 
-	// Make the list items more compact
-	messageList.CreateItem = func() fyne.CanvasObject {
-		return container.NewHBox(
-			container.NewGridWrap(fyne.NewSize(240, 30),
-				widget.NewLabel("Template"),
-			),
-			container.NewGridWrap(fyne.NewSize(50, 30),
-				widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
-			),
-		)
+		// Print footer
+		fmt.Println()
+		fmt.Println("\033[1;36m===================================\033[0m")
+
+		// Increment scroll position every 3 seconds
+		if len(messages) > maxShow {
+			currentScrollIndex = (currentScrollIndex + 1) % len(messages)
+		}
+
+		// Wait before refresh
+		time.Sleep(3 * time.Second)
 	}
-
-	// Layout
-	content := container.NewBorder(
-		titleContainer, // Top
-		nil,            // Bottom
-		nil,            // Left
-		nil,            // Right
-		messageList,    // Center
-	)
-
-	// Start periodic refresh (every 5 seconds)
-	go func() {
-		for range time.Tick(5 * time.Second) {
-			messageList.Refresh()
-		}
-	}()
-
-	// Auto-scroll functionality
-	go func() {
-		for range time.Tick(3 * time.Second) { // Adjust scroll speed here
-			messages, _ := messagesDb.GetMessages()
-			maxVisible := 6 // Approximate number of visible messages
-
-			if len(messages) > maxVisible {
-				currentScrollIndex = (currentScrollIndex + 1) % len(messages)
-				messageList.ScrollTo(currentScrollIndex)
-			}
-		}
-	}()
-
-	window.SetContent(content)
-	// Remove the Resize call since we're in fullscreen
-	// window.Resize(fyne.NewSize(320, 240))
-	// window.SetFixedSize(true) // Not needed in fullscreen
-	window.ShowAndRun()
 }
 
 func startWebServer() {
