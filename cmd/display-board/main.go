@@ -3,417 +3,222 @@ package main
 import (
 	"fmt"
 	"html/template"
+	"image/color"
 	"net/http"
 	"strconv"
-	"sync"
+	"time"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 	"github.com/aveiga/display-board/pkg/db"
-	"github.com/gorilla/websocket"
 )
 
-// WebSocket upgrader
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Be careful with this in production
-	},
+// RetroTheme implements a custom theme that mimics old terminal displays
+type RetroTheme struct {
+	fyne.Theme
 }
 
-// Hub maintains the set of active clients
-type Hub struct {
-	clients    map[*websocket.Conn]bool
-	broadcast  chan []byte
-	register   chan *websocket.Conn
-	unregister chan *websocket.Conn
-	mutex      sync.Mutex
-}
-
-func newHub() *Hub {
-	return &Hub{
-		clients:    make(map[*websocket.Conn]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *websocket.Conn),
-		unregister: make(chan *websocket.Conn),
+func (r RetroTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameBackground:
+		return color.Black
+	case theme.ColorNameForeground, theme.ColorNamePrimary:
+		return color.RGBA{0x00, 0xB1, 0xB7, 0xFF} // #00B1B7 - the terminal green-blue color
+	case theme.ColorNameButton, theme.ColorNameDisabled:
+		return color.RGBA{0x00, 0x80, 0x80, 0xFF}
+	default:
+		return color.RGBA{0x00, 0xB1, 0xB7, 0xFF}
 	}
 }
 
-var (
-	messagesDb = db.Database{}
-	hub        = newHub()
-)
+func (r RetroTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return theme.DefaultTheme().Font(style)
+}
 
-func (h *Hub) run() {
-	for {
-		select {
-		case client := <-h.register:
-			h.mutex.Lock()
-			h.clients[client] = true
-			h.mutex.Unlock()
-		case client := <-h.unregister:
-			h.mutex.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				client.Close()
-			}
-			h.mutex.Unlock()
-		case message := <-h.broadcast:
-			h.mutex.Lock()
-			for client := range h.clients {
-				if err := client.WriteMessage(websocket.TextMessage, message); err != nil {
-					client.Close()
-					delete(h.clients, client)
-				}
-			}
-			h.mutex.Unlock()
-		}
+func (r RetroTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (r RetroTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNameText:
+		return 18 // Larger text size
+	case theme.SizeNamePadding:
+		return 4 // Reduced padding for compact look
+	default:
+		return theme.DefaultTheme().Size(name)
 	}
 }
+
+var messagesDb = db.Database{}
+var currentScrollIndex = 0
 
 func main() {
-	// Start the hub
-	go hub.run()
+	// Start HTTP server for message creation
+	go startWebServer()
 
+	// Start Fyne app for message display
+	myApp := app.New()
+	myApp.Settings().SetTheme(&RetroTheme{})
+	window := myApp.NewWindow("Remindintosh")
+
+	// Create title label with custom styling
+	title := widget.NewLabel("Remindintosh")
+	title.TextStyle = fyne.TextStyle{
+		Bold:      true,
+		Monospace: true,
+	}
+	// Center the title and wrap it in padding
+	titleContainer := container.NewCenter(
+		container.NewPadded(title),
+	)
+
+	// Define messageList here so it's in scope for the refresh function
+	var messageList *widget.List
+	messageList = widget.NewList(
+		func() int {
+			messages, _ := messagesDb.GetMessages()
+			return len(messages)
+		},
+		func() fyne.CanvasObject {
+			return container.NewHBox(
+				// Make the label take most of the space
+				container.NewGridWrap(fyne.NewSize(240, 30),
+					widget.NewLabel(""),
+				),
+				// Small delete button on the right
+				container.NewGridWrap(fyne.NewSize(50, 30),
+					widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {}),
+				),
+			)
+		},
+		func(id widget.ListItemID, item fyne.CanvasObject) {
+			messages, _ := messagesDb.GetMessages()
+			if id < len(messages) {
+				box := item.(*fyne.Container)
+				labelContainer := box.Objects[0].(*fyne.Container)
+				buttonContainer := box.Objects[1].(*fyne.Container)
+
+				label := labelContainer.Objects[0].(*widget.Label)
+				button := buttonContainer.Objects[0].(*widget.Button)
+
+				// Truncate long messages to fit the screen
+				msg := messages[id].Message
+				if len(msg) > 30 {
+					msg = msg[:27] + "..."
+				}
+				label.SetText(msg)
+				label.Wrapping = fyne.TextTruncate
+
+				button.OnTapped = func() {
+					messagesDb.DeleteMessage(messages[id].ID)
+					messageList.Refresh()
+				}
+			}
+		},
+	)
+
+	// Make the list items more compact
+	messageList.CreateItem = func() fyne.CanvasObject {
+		return container.NewHBox(
+			container.NewGridWrap(fyne.NewSize(240, 30),
+				widget.NewLabel("Template"),
+			),
+			container.NewGridWrap(fyne.NewSize(50, 30),
+				widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
+			),
+		)
+	}
+
+	// Layout
+	content := container.NewBorder(
+		titleContainer, // Top
+		nil,            // Bottom
+		nil,            // Left
+		nil,            // Right
+		messageList,    // Center
+	)
+
+	// Start periodic refresh (every 5 seconds)
+	go func() {
+		for range time.Tick(5 * time.Second) {
+			messageList.Refresh()
+		}
+	}()
+
+	// Auto-scroll functionality
+	go func() {
+		for range time.Tick(3 * time.Second) { // Adjust scroll speed here
+			messages, _ := messagesDb.GetMessages()
+			maxVisible := 6 // Approximate number of visible messages
+
+			if len(messages) > maxVisible {
+				currentScrollIndex = (currentScrollIndex + 1) % len(messages)
+				messageList.ScrollTo(currentScrollIndex)
+			}
+		}
+	}()
+
+	window.SetContent(content)
+	window.Resize(fyne.NewSize(320, 240))
+	window.SetFixedSize(true) // Prevent window resizing
+	window.CenterOnScreen()
+	window.ShowAndRun()
+}
+
+func startWebServer() {
 	// Set up HTTP routes
-	http.HandleFunc("/", handleHome)
 	http.HandleFunc("/messages", handleMessageCreationPage)
 	http.HandleFunc("/message", handleMessageAction)
-	http.HandleFunc("/ws", handleWebSocket)
 
-	fmt.Println("Server starting on :8080...")
+	fmt.Println("Web server starting on :8080...")
 	http.ListenAndServe(":8080", nil)
-}
-
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println("WebSocket upgrade error:", err)
-		return
-	}
-
-	// Register new client
-	hub.register <- conn
-
-	// Send initial messages
-	messages, _ := messagesDb.GetMessages()
-	html := generateMessagesHTML(messages)
-	wsMessage := html
-	conn.WriteMessage(websocket.TextMessage, []byte(wsMessage))
-}
-
-// Helper function to generate messages HTML
-func generateMessagesHTML(messages []db.Message) string {
-	var html string
-	for _, msg := range messages {
-		html += fmt.Sprintf(`
-			<div class="flexItem">
-				<div class="flexItemContent message">
-					%s
-				</div>
-				<div class="flexItemContent actions">
-					<button class="button-terminal" hx-delete="/message?id=%d"
-						hx-target="closest div.flexItem"
-						hx-swap="outerHTML">
-						Delete
-					</button>
-				</div>
-			</div>`,
-			msg.Message,
-			msg.ID)
-	}
-	return html
-}
-
-func handleHome(w http.ResponseWriter, r *http.Request) {
-	messages, err := messagesDb.GetMessages()
-	if err != nil {
-		http.Error(w, "Failed to get messages", http.StatusInternalServerError)
-		return
-	}
-
-	tmpl := `<!DOCTYPE html>
-<html class="fullPage">
-<head>
-    <title>Remindintosh</title>
-	<link rel="preconnect" href="https://fonts.googleapis.com">
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
-	<style>
-		@keyframes flicker {
-		  0% {
-		    opacity: 0.27861;
-		  }
-		  5% {
-		    opacity: 0.34769;
-		  }
-		  10% {
-		    opacity: 0.23604;
-		  }
-		  15% {
-		    opacity: 0.90626;
-		  }
-		  20% {
-		    opacity: 0.18128;
-		  }
-		  25% {
-		    opacity: 0.83891;
-		  }
-		  30% {
-		    opacity: 0.65583;
-		  }
-		  35% {
-		    opacity: 0.67807;
-		  }
-		  40% {
-		    opacity: 0.26559;
-		  }
-		  45% {
-		    opacity: 0.84693;
-		  }
-		  50% {
-		    opacity: 0.96019;
-		  }
-		  55% {
-		    opacity: 0.08594;
-		  }
-		  60% {
-		    opacity: 0.20313;
-		  }
-		  65% {
-		    opacity: 0.71988;
-		  }
-		  70% {
-		    opacity: 0.53455;
-		  }
-		  75% {
-		    opacity: 0.37288;
-		  }
-		  80% {
-		    opacity: 0.71428;
-		  }
-		  85% {
-		    opacity: 0.70419;
-		  }
-		  90% {
-		    opacity: 0.7003;
-		  }
-		  95% {
-		    opacity: 0.36108;
-		  }
-		  100% {
-		    opacity: 0.24387;
-		  }
-		}
-		@keyframes textShadow {
-		  0% {
-		    text-shadow: 0.4389924193300864px 0 1px rgba(0,30,255,0.5), -0.4389924193300864px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  5% {
-		    text-shadow: 2.7928974010788217px 0 1px rgba(0,30,255,0.5), -2.7928974010788217px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  10% {
-		    text-shadow: 0.02956275843481219px 0 1px rgba(0,30,255,0.5), -0.02956275843481219px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  15% {
-		    text-shadow: 0.40218538552878136px 0 1px rgba(0,30,255,0.5), -0.40218538552878136px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  20% {
-		    text-shadow: 3.4794037899852017px 0 1px rgba(0,30,255,0.5), -3.4794037899852017px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  25% {
-		    text-shadow: 1.6125630401149584px 0 1px rgba(0,30,255,0.5), -1.6125630401149584px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  30% {
-		    text-shadow: 0.7015590085143956px 0 1px rgba(0,30,255,0.5), -0.7015590085143956px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  35% {
-		    text-shadow: 3.896914047650351px 0 1px rgba(0,30,255,0.5), -3.896914047650351px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  40% {
-		    text-shadow: 3.870905614848819px 0 1px rgba(0,30,255,0.5), -3.870905614848819px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  45% {
-		    text-shadow: 2.231056963361899px 0 1px rgba(0,30,255,0.5), -2.231056963361899px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  50% {
-		    text-shadow: 0.08084290417898504px 0 1px rgba(0,30,255,0.5), -0.08084290417898504px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  55% {
-		    text-shadow: 2.3758461067427543px 0 1px rgba(0,30,255,0.5), -2.3758461067427543px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  60% {
-		    text-shadow: 2.202193051050636px 0 1px rgba(0,30,255,0.5), -2.202193051050636px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  65% {
-		    text-shadow: 2.8638780614874975px 0 1px rgba(0,30,255,0.5), -2.8638780614874975px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  70% {
-		    text-shadow: 0.48874025155497314px 0 1px rgba(0,30,255,0.5), -0.48874025155497314px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  75% {
-		    text-shadow: 1.8948491305757957px 0 1px rgba(0,30,255,0.5), -1.8948491305757957px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  80% {
-		    text-shadow: 0.0833037308038857px 0 1px rgba(0,30,255,0.5), -0.0833037308038857px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  85% {
-		    text-shadow: 0.09769827255241735px 0 1px rgba(0,30,255,0.5), -0.09769827255241735px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  90% {
-		    text-shadow: 3.443339761481782px 0 1px rgba(0,30,255,0.5), -3.443339761481782px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  95% {
-		    text-shadow: 2.1841838852799786px 0 1px rgba(0,30,255,0.5), -2.1841838852799786px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		  100% {
-		    text-shadow: 2.6208764473832513px 0 1px rgba(0,30,255,0.5), -2.6208764473832513px 0 1px rgba(255,0,80,0.3), 0 0 3px;
-		  }
-		}
-		.crt::after {
-		  content: " ";
-		  display: block;
-		  position: absolute;
-		  top: 0;
-		  left: 0;
-		  bottom: 0;
-		  right: 0;
-		  background: rgba(18, 16, 16, 0.1);
-		  opacity: 0;
-		  z-index: 2;
-		  pointer-events: none;
-		  animation: flicker 0.15s infinite;
-		}
-		.crt::before {
-		  content: " ";
-		  display: block;
-		  position: absolute;
-		  top: 0;
-		  left: 0;
-		  bottom: 0;
-		  right: 0;
-		  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
-		  z-index: 2;
-		  background-size: 100% 2px, 3px 100%;
-		  pointer-events: none;
-		}
-		.crt {
-		  animation: textShadow 1.6s infinite;
-		}
-
-		.fullPage {
-			background-color: #000;
-			color: #00B1B7;
-			font-size: 40px;
-			font-family: "VT323", serif;
-			font-weight: 400;
-			font-style: normal;
-		}
-
-		.h1 {
-			text-align: center;
-			margin-bottom: 5px;
-		}
-
-		.flexList {
-			display: flex;
-    		flex-direction: column;
-    		gap: 10px;
-			height: 460px;
-			overflow: hidden;
-			position: relative;
-			font-size: 50px;
-		}
-
-		.flexContainer {
-			display: flex;
-			flex-direction: column;
-			gap: 10px;
-			column-gap: 50px;
-    		margin-left: 20px;
-    		margin-right: 20px;
-			animation: scroll-list 25s linear infinite;
-		}
-
-		.flexItem {
-			display: flex;
-			flex-direction: row;
-			gap: 10px;
-			height: 80px;
-		}
-
-		.flexItemContent {
-			flex: 1;
-		}
-
-		.flexItemContent.actions {
-			display: flex;
-			align-items: center;
-			width: 100%;
-			height: 50px;
-			justify-content: center;
-		}
-
-		.button-terminal {
-			background-color: black;
-			color: #00B1B7;
-			font-size: 40px;
-			border: 5px solid #00B1B7;
-			padding: 10px 20px;
-			text-transform: uppercase;
-			cursor: pointer;
-			outline: none;
-			transition: all 0.2sease-in-out;
-		}
-
-		@keyframes scroll-list {
-		  0% {
-		    transform: translateY(0);
-		  }
-		  100% {
-		    transform: translateY(-50%);
-		  }
-		}
-	</style>
-</head>
-<body>
-    <div id="wrapper" class="crt">
-        <h1 class="h1">Remindintosh</h1>
-		<div class="flexList">
-        <div class="flexContainer" hx-ext="ws" ws-connect="/ws" id="messages-list">
-			{{range .}}
-			<div class="flexItem">
-				<div class="flexItemContent message">
-					{{.Message}}
-				</div>
-				<div class="flexItemContent actions">
-					<button class="button-terminal" hx-delete="/message?id={{.ID}}"
-						hx-target="closest div.flexItem"
-						hx-swap="outerHTML">
-						Delete
-					</button>
-				</div>
-			</div>
-			{{end}}
-        </div>
-		</div>
-        <br/>
-    </div>
-</body>
-</html>`
-
-	t := template.Must(template.New("home").Parse(tmpl))
-	t.Execute(w, messages)
 }
 
 func handleMessageCreationPage(w http.ResponseWriter, r *http.Request) {
 	tmpl := `
 <!DOCTYPE html>
-<html>
+<html class="fullPage">
 <head>
     <title>Remindintosh - Create Message</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <style>
+        .fullPage {
+            background-color: #000;
+            color: #00B1B7;
+            font-size: 40px;
+            font-family: "VT323", serif;
+            font-weight: 400;
+            font-style: normal;
+        }
+        .button-terminal {
+            background-color: black;
+            color: #00B1B7;
+            font-size: 40px;
+            border: 5px solid #00B1B7;
+            padding: 10px 20px;
+            text-transform: uppercase;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s ease-in-out;
+        }
+        textarea {
+            background-color: #000;
+            color: #00B1B7;
+            border: 5px solid #00B1B7;
+            font-family: "VT323", serif;
+            font-size: 30px;
+            padding: 10px;
+            width: 80%;
+            height: 150px;
+        }
+    </style>
 </head>
 <body>
     <h1>Create New Message</h1>
@@ -422,9 +227,8 @@ func handleMessageCreationPage(w http.ResponseWriter, r *http.Request) {
             <label for="message">Message:</label><br>
             <textarea id="message" name="message" required></textarea><br>
         </div>
-        <input type="submit" value="Submit">
+        <input type="submit" value="Submit" class="button-terminal">
     </form>
-    <p><a href="/">Back to Messages</a></p>
 </body>
 </html>`
 
@@ -445,19 +249,18 @@ func handleMessageAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err = messagesDb.AddMessage(db.Message{Message: message})
+		_, err = messagesDb.AddMessage(db.Message{
+			Message: message,
+			Created: time.Now(),
+			ID:      time.Now().Nanosecond(),
+		})
 		if err != nil {
 			http.Error(w, "Failed to create message", http.StatusInternalServerError)
 			return
 		}
 
-		// Broadcast updated messages
-		messages, _ := messagesDb.GetMessages()
-		html := generateMessagesHTML(messages)
-		wsMessage := fmt.Sprintf(`<div hx-swap-oob="innerHTML:#messages-list">%s</div>`, html)
-		hub.broadcast <- []byte(wsMessage)
-
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// Return success status
+		w.WriteHeader(http.StatusOK)
 	} else if r.Method == http.MethodDelete {
 		id := r.URL.Query().Get("id")
 		if id == "" {
@@ -476,12 +279,6 @@ func handleMessageAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to delete message", http.StatusInternalServerError)
 			return
 		}
-
-		// Broadcast updated messages
-		messages, _ := messagesDb.GetMessages()
-		html := generateMessagesHTML(messages)
-		wsMessage := fmt.Sprintf(`<div hx-swap-oob="innerHTML:#messages-list">%s</div>`, html)
-		hub.broadcast <- []byte(wsMessage)
 
 		w.WriteHeader(http.StatusOK)
 	} else {
