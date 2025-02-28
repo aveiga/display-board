@@ -65,6 +65,10 @@ func main() {
 	myApp.Settings().SetTheme(&RetroTheme{})
 	window := myApp.NewWindow("Remindintosh")
 
+	// Set up fullscreen mode
+	window.SetFullScreen(true)
+	window.CenterOnScreen()
+
 	// Create title label with custom styling
 	title := widget.NewLabel("Remindintosh")
 	title.TextStyle = fyne.TextStyle{
@@ -163,9 +167,9 @@ func main() {
 	}()
 
 	window.SetContent(content)
-	window.Resize(fyne.NewSize(320, 240))
-	window.SetFixedSize(true) // Prevent window resizing
-	window.CenterOnScreen()
+	// Remove the Resize call since we're in fullscreen
+	// window.Resize(fyne.NewSize(320, 240))
+	// window.SetFixedSize(true) // Not needed in fullscreen
 	window.ShowAndRun()
 }
 
