@@ -38,7 +38,7 @@ func runConsoleBased() {
 		clearCommand.Run()
 
 		// Print title
-		fmt.Println("\033[1;36m========== REMINDINTOSH ==========\033[0m")
+		fmt.Println("\033[1;36m======== REMINDINTOSH ========\033[0m")
 		fmt.Println()
 
 		// Display messages
@@ -65,7 +65,7 @@ func runConsoleBased() {
 
 		// Print footer
 		fmt.Println()
-		fmt.Println("\033[1;36m===================================\033[0m")
+		fmt.Println("\033[1;36m===============================\033[0m")
 
 		// Increment scroll position every 3 seconds
 		if len(messages) > maxShow {
