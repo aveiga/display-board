@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"image/color"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -57,6 +58,10 @@ var messagesDb = db.Database{}
 var currentScrollIndex = 0
 
 func main() {
+	// Set environment variables for framebuffer access
+	os.Setenv("FYNE_DRIVER", "gl")
+	os.Setenv("FYNE_SCALE", "1")
+
 	// Start HTTP server for message creation
 	go startWebServer()
 
